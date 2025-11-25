@@ -94,6 +94,6 @@ const server = net.createServer((socket) => {
 });
 
 
-server.listen(5001, () => {
+server.listen(5001, '127.0.0.1', () => {
     console.log('Server listening on port 5001');
 });
