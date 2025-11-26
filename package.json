@@ -5,7 +5,8 @@
   "main": "server-http.js",
   "type": "module",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server-tcp.js"
   },
   "author": "",
   "license": "ISC",
