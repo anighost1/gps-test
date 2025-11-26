@@ -4,7 +4,16 @@ const server = net.createServer((socket) => {
     console.log("Tracker connected:", socket.remoteAddress);
 
     socket.on("data", (data) => {
-        console.log("Received:", data.toString());
+        console.log("========================================");
+        console.log("RAW BUFFER:", data);
+        console.log("ASCII     :", data.toString());
+        console.log("HEX       :", data.toString("hex"));
+        console.log("LENGTH    :", data.length);
+        console.log("========================================");
+    });
+
+    socket.on("error", (err) => {
+        console.error("Socket error:", err);
     });
 
     socket.on("close", () => {
