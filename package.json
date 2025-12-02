@@ -11,8 +11,6 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "axios": "^1.13.2",
-    "dgram": "^1.0.1",
     "express": "^5.1.0",
     "net": "^1.0.2",
     "node-crc-itu": "^0.1.0"

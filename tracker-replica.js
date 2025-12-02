@@ -1,51 +1,55 @@
 import net from 'net';
-import CRC16 from 'node-crc-itu'; // install via: npm install node-crc-itu
+import CRC16 from 'node-crc-itu';
 
-const HOST = '127.0.0.1';
+const client = new net.Socket();
 const PORT = 5001;
-const IMEI = '356860820045174';
+const HOST = '127.0.0.1';
+const IMEI = '356860820045174'; // 15-digit
 
-function encodeIMEIToBCD(imei) {
-    const padded = imei.padEnd(16, 'F'); // GT06 pads to 8 BCD bytes
-    const buffer = Buffer.alloc(8);
-    for (let i = 0; i < 8; i++) {
-        buffer[i] = parseInt(padded.substr(i * 2, 2), 16);
+function encodeIMEI(imei) {
+    const padded = imei.length % 2 === 0 ? imei : imei + 'F';
+    const buf = Buffer.alloc(padded.length / 2);
+    for (let i = 0; i < padded.length; i += 2) {
+        buf[i / 2] = parseInt(padded[i] + padded[i + 1], 16);
     }
-    return buffer;
+    return buf;
 }
 
 function buildLoginPacket() {
-    const start = Buffer.from([0x78, 0x78]);
     const protocol = Buffer.from([0x01]);
-    const imei = encodeIMEIToBCD(IMEI);
-    const serial = Buffer.from([0x00, 0x01]);
-    const length = Buffer.from([protocol.length + imei.length + serial.length]);
+    const imeiBuf = encodeIMEI(IMEI);
+    const serial = Buffer.from([0x00, 0x01]); // optional, any serial
 
-    const content = Buffer.concat([protocol, imei, serial]);
-    const crcValue = CRC16(content);
+    const body = Buffer.concat([protocol, imeiBuf, serial]);
+    const length = Buffer.from([body.length]);
     const crc = Buffer.alloc(2);
-    crc.writeUInt16BE(parseInt(crcValue, 16));
-    const end = Buffer.from([0x0D, 0x0A]);
+    const crcValue = parseInt(CRC16(body), 16);
+    crc.writeUInt16BE(crcValue);
 
-    const packet = Buffer.concat([start, length, content, crc, end]);
-    console.log('Sending Login Packet:', packet.toString('hex'));
-    return packet;
+    const final = Buffer.concat([
+        Buffer.from([0x78, 0x78]),
+        length,
+        body,
+        crc,
+        Buffer.from([0x0D, 0x0A]),
+    ]);
+
+    console.log('Final packet (HEX):', final.toString('hex'));
+    return final;
 }
 
-// TCP client
-const client = new net.Socket();
 client.connect(PORT, HOST, () => {
-    console.log('✅ Connected to server');
-    const packet = buildLoginPacket();
-    client.write(packet);
+    console.log('🔗 Connected to server');
+    const loginPacket = buildLoginPacket();
+    client.write(loginPacket);
 });
 
 client.on('data', (data) => {
-    console.log('📥 Server replied:', data.toString('hex'));
+    console.log('📥 ACK from server:', data.toString('hex'));
 });
 
 client.on('close', () => {
-    console.log('🔌 Disconnected');
+    console.log('🔌 Connection closed');
 });
 
 client.on('error', (err) => {
