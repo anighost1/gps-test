@@ -1,9 +1,14 @@
-// gt06-server.js
 import net from "net";
 import CRC16 from "node-crc-itu";
+import { createClient } from "redis";
 
-// CONFIG
-const PORT = 5001;
+// Redis Publisher
+const redis = createClient({
+    url: process.env.REDIS_URL || "redis://127.0.0.1:6379",
+});
+redis.connect();
+
+const PORT = 5000;
 
 // ========= Helper: BCD → IMEI =========
 function bcdToImei(buf) {
@@ -54,13 +59,13 @@ function buildAck(protocol, serial) {
 
 const server = net.createServer((socket) => {
     console.log("📡 Tracker connected:", socket.remoteAddress, socket.remotePort);
+
     let buffer = Buffer.alloc(0);
     let trackerIMEI = null;
 
-    socket.on("data", (data) => {
+    socket.on("data", async (data) => {
         buffer = Buffer.concat([buffer, data]);
 
-        // Align packet start
         let headerIndex = findHeader(buffer);
         if (headerIndex > 0) buffer = buffer.slice(headerIndex);
 
@@ -71,167 +76,147 @@ const server = net.createServer((socket) => {
             }
 
             const len = buffer[2];
-            const totalLen = len + 5; // 2 start + 1 len + len + 2 end
+            const totalLen = len + 5;
 
             if (buffer.length < totalLen) break;
 
             const packet = buffer.slice(0, totalLen);
             buffer = buffer.slice(totalLen);
 
-            // Validate tail
-            if (packet[totalLen - 2] !== 0x0d || packet[totalLen - 1] !== 0x0a) {
-                console.warn("⚠️ 0x0D0A missing – ignoring.");
-                continue;
-            }
+            if (packet[totalLen - 2] !== 0x0d || packet[totalLen - 1] !== 0x0a) continue;
 
             const protocol = packet[3];
-
-            // Serial number (before CRC and tail)
             const serialOffset = totalLen - 6;
             const serial = packet.slice(serialOffset, serialOffset + 2);
 
-            // CRC check
             const crcGiven = packet.readUInt16BE(totalLen - 4);
             const crcCalc = computeCRC(packet.slice(2, totalLen - 4));
 
-            if (crcGiven !== crcCalc) {
-                console.warn(`⚠️ CRC mismatch. Got ${crcGiven}, expected ${crcCalc}`);
-                continue;
-            }
-
-            // =====================================================
-            //              PACKET TYPE HANDLERS
-            // =====================================================
+            if (crcGiven !== crcCalc) continue;
 
             switch (protocol) {
-                // -------------------------------------------------
-                // LOGIN (0x01)
-                // -------------------------------------------------
+
+                // =================== LOGIN ===================
                 case 0x01: {
-                    const imeiBuf = packet.slice(4, 12);
-                    trackerIMEI = bcdToImei(imeiBuf);
-                    console.log("🔐 Login:", trackerIMEI);
+                    trackerIMEI = bcdToImei(packet.slice(4, 12));
+
+                    await redis.publish("login", JSON.stringify({
+                        imei: trackerIMEI,
+                        time: new Date().toISOString()
+                    }));
+
                     socket.write(buildAck(0x01, serial));
                     break;
                 }
 
-                // -------------------------------------------------
-                // GPS (0x12)
-                // -------------------------------------------------
+                // =================== GPS =====================
                 case 0x12: {
-                    try {
-                        // -----------------------------
-                        // Decode latitude / longitude
-                        // -----------------------------
-                        const latRaw = packet.readUInt32BE(11);
-                        const lonRaw = packet.readUInt32BE(15);
+                    const latRaw = packet.readUInt32BE(11);
+                    const lonRaw = packet.readUInt32BE(15);
+                    const lat = latRaw / 30000.0 / 60.0;
+                    const lon = lonRaw / 30000.0 / 60.0;
+                    const speed = packet.readUInt8(19);
 
-                        const lat = latRaw / 30000.0 / 60.0;
-                        const lon = lonRaw / 30000.0 / 60.0;
+                    const cs = packet.readUInt16BE(20);
+                    const isEast = (cs & 0x0200) !== 0;
+                    const isNorth = (cs & 0x0400) !== 0;
+                    const course = cs & 0x01FF;
 
-                        // -----------------------------
-                        // Speed (1 byte)
-                        // -----------------------------
-                        const speed = packet.readUInt8(19);
+                    const gpsData = {
+                        imei: trackerIMEI,
+                        lat,
+                        lon,
+                        speed,
+                        course,
+                        direction: `${isNorth ? "N" : "S"}${isEast ? "E" : "W"}`,
+                        time: new Date().toISOString(),
+                    };
 
-                        // -----------------------------
-                        // Course + status (2 bytes)
-                        // Bits:
-                        // bit10: West/East
-                        // bit11: South/North
-                        // bit12-15: course degrees
-                        // -----------------------------
-                        const courseStatus = packet.readUInt16BE(20);
+                    await redis.publish("gps-update", JSON.stringify(gpsData));
 
-                        const isEast = (courseStatus & 0x0200) !== 0;
-                        const isNorth = (courseStatus & 0x0400) !== 0;
-
-                        const courseDegrees = courseStatus & 0x01FF; // lower 9 bits
-
-                        const direction = `${isNorth ? "N" : "S"}${isEast ? "E" : "W"}`;
-
-                        // -----------------------------
-                        // Output parsed GPS
-                        // -----------------------------
-                        console.log("📍 GPS:", {
-                            imei: trackerIMEI,
-                            lat,
-                            lon,
-                            speed,
-                            course: courseDegrees,
-                            direction,
-                            time: new Date().toISOString(),
-                        });
-
-                        socket.write(buildAck(0x12, serial));
-                    } catch (e) {
-                        console.error("GPS parse error", e);
-                    }
+                    socket.write(buildAck(0x12, serial));
                     break;
                 }
 
-                // -------------------------------------------------
-                // HEARTBEAT (0x13)
-                // -------------------------------------------------
-                case 0x13: {
-                    console.log("💓 Heartbeat:", trackerIMEI);
-                    socket.write(buildAck(0x13, serial));
-                    break;
-                }
-
-                // -------------------------------------------------
-                // STATUS (0x10)
-                // -------------------------------------------------
+                // =================== STATUS ==================
                 case 0x10: {
-                    const info = packet.slice(4, serialOffset);
-                    console.log("🔧 Status packet:", trackerIMEI, "Data:", info.toString("hex"));
+                    const dataHex = packet.slice(4, serialOffset).toString("hex");
+
+                    await redis.publish("status", JSON.stringify({
+                        imei: trackerIMEI,
+                        raw: dataHex,
+                        time: new Date().toISOString(),
+                    }));
+
                     socket.write(buildAck(0x10, serial));
                     break;
                 }
 
-                // -------------------------------------------------
-                // STRING INFORMATION (0x15)
-                // -------------------------------------------------
-                case 0x15: {
-                    const str = packet.slice(4, serialOffset).toString("ascii");
-                    console.log("💬 String Info:", str);
-                    socket.write(buildAck(0x15, serial));
+                // =================== HEARTBEAT ===============
+                case 0x13: {
+                    await redis.publish("heartbeat", JSON.stringify({
+                        imei: trackerIMEI,
+                        time: new Date().toISOString(),
+                    }));
+
+                    socket.write(buildAck(0x13, serial));
                     break;
                 }
 
-                // -------------------------------------------------
-                // ALARM (0x16)
-                // -------------------------------------------------
+                // =================== ALARM ===================
                 case 0x16: {
-                    const alarm = packet[4].toString(16).padStart(2, "0");
-                    console.log("🚨 Alarm:", trackerIMEI, "Code:", alarm);
+                    const alarmCode = packet[4];
+
+                    await redis.publish("alarm", JSON.stringify({
+                        imei: trackerIMEI,
+                        alarmCode,
+                        time: new Date().toISOString(),
+                    }));
+
                     socket.write(buildAck(0x16, serial));
                     break;
                 }
 
-                // -------------------------------------------------
-                // COMMAND RESPONSE (0x80)
-                // -------------------------------------------------
-                case 0x80: {
-                    const resp = packet.slice(4, serialOffset).toString("hex");
-                    console.log("📥 Command Response:", resp);
-                    socket.write(buildAck(0x80, serial));
+                // =================== STRING INFO =============
+                case 0x15: {
+                    const text = packet.slice(4, serialOffset).toString("ascii");
+
+                    await redis.publish("string-info", JSON.stringify({
+                        imei: trackerIMEI,
+                        text,
+                        time: new Date().toISOString(),
+                    }));
+
+                    socket.write(buildAck(0x15, serial));
                     break;
                 }
 
-                // -------------------------------------------------
-                // UNKNOWN PACKETS
-                // -------------------------------------------------
-                default:
-                    console.log(`📦 Unknown Protocol 0x${protocol.toString(16)} IMEI:`, trackerIMEI);
-                    console.log("Raw:", packet.toString("hex"));
-                    socket.write(buildAck(protocol, serial));
+                // ================= COMMAND RESP ================
+                case 0x80: {
+                    const response = packet.slice(4, serialOffset).toString("hex");
+
+                    await redis.publish("command-response", JSON.stringify({
+                        imei: trackerIMEI,
+                        response,
+                        time: new Date().toISOString(),
+                    }));
+
+                    socket.write(buildAck(0x80, serial));
+                    break;
+                }
             }
         }
     });
 
-    socket.on("close", () => console.log("🔌 Tracker disconnected", trackerIMEI));
-    socket.on("error", err => console.error("❗ Socket error:", err.message));
+    socket.on("close", () => {
+        console.log("🔌 Tracker disconnected:", trackerIMEI);
+    });
+
+    socket.on("error", (err) => {
+        console.log("❗ Socket error:", err.message);
+    });
 });
 
-server.listen(PORT, () => console.log(`🚀 GT06 Server running on port ${PORT}`));
+server.listen(PORT, () =>
+    console.log(`🚀 GT06 TCP Server running on port ${PORT}`)
+);

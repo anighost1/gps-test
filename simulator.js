@@ -235,7 +235,7 @@ export function startTracker({
                 inFence = false;
                 sock.write(alarmPacket(0x12)); // exit
             }
-        }, 1000);
+        }, 3000);
 
         // Heartbeat every 20 sec
         setInterval(() => {
