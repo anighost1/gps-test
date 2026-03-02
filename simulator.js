@@ -179,11 +179,9 @@ export function startTracker({
 }) {
     const sock = new net.Socket();
 
-    let prevLat = lat;
-    let prevLon = lon;
-
-    let speed = 0;
-    let battery = 80;
+    let speed = 20;          // km/h initial
+    let heading = Math.random() * 360;
+    let battery = 90;
     let inFence = false;
 
     const geofence = {
@@ -192,57 +190,108 @@ export function startTracker({
         radius: 0.002,
     };
 
+    // meters per degree approx
+    const METER_TO_DEG = 1 / 111320;
+
     sock.connect(port, host, () => {
         console.log("✓ Tracker connected", imei);
 
         sock.write(loginPacket(imei));
 
+        let lastTime = Date.now();
+
         setInterval(() => {
-            prevLat = lat;
-            prevLon = lon;
+            const now = Date.now();
+            const dt = (now - lastTime) / 1000; // seconds
+            lastTime = now;
 
-            // Random movement
-            lat += (Math.random() - 0.5) * 0.0005;
-            lon += (Math.random() - 0.5) * 0.0005;
+            /* -------------------------
+               Smooth acceleration
+            ------------------------- */
+            speed += (Math.random() - 0.5) * 2;
+            speed = Math.max(0, Math.min(80, speed));
 
-            // Calculate heading
-            const heading = calculateHeading(prevLat, prevLon, lat, lon);
+            /* -------------------------
+               Smooth turning
+            ------------------------- */
+            heading += (Math.random() - 0.5) * 10;
+            heading = (heading + 360) % 360;
 
-            // Speed simulation
-            speed += (Math.random() - 0.5) * 10;
-            if (speed < 0) speed = 0;
-            if (speed > 120) speed = 120;
+            /* -------------------------
+               Move using speed
+            ------------------------- */
+
+            // km/h → m/s
+            const speedMS = speed * (1000 / 3600);
+
+            const distance = speedMS * dt;
+
+            const rad = heading * Math.PI / 180;
+
+            lat += distance * Math.cos(rad) * METER_TO_DEG;
+            lon +=
+                distance *
+                Math.sin(rad) *
+                METER_TO_DEG /
+                Math.cos(lat * Math.PI / 180);
+
+            /* -------------------------
+               GPS Noise (realistic)
+            ------------------------- */
+            const noise = 0.00001;
+            const gpsLat = lat + (Math.random() - 0.5) * noise;
+            const gpsLon = lon + (Math.random() - 0.5) * noise;
 
             console.log(
-                `GPS → lat=${lat.toFixed(6)}, lon=${lon.toFixed(6)}, heading=${heading}, speed=${speed}`
+                `GPS → ${gpsLat.toFixed(6)}, ${gpsLon.toFixed(6)} | ${speed.toFixed(
+                    1
+                )} km/h | heading ${heading.toFixed(0)}`
             );
 
-            sock.write(gpsPacket(lat, lon, speed, heading));
+            sock.write(
+                gpsPacket(gpsLat, gpsLon, Math.round(speed), Math.round(heading))
+            );
 
-            // Battery drain
-            battery -= 0.2;
-            if (battery < 20) sock.write(alarmPacket(0x02));
+            /* -------------------------
+               Battery drain
+            ------------------------- */
+            battery -= 0.02;
+            if (battery < 20) {
+                sock.write(alarmPacket(0x02));
+            }
 
             sock.write(statusPacket(Math.round(battery)));
 
-            // Geofence
-            const inside = insideGeofence(lat, lon, geofence);
+            /* -------------------------
+               Geofence logic
+            ------------------------- */
+            const inside = insideGeofence(gpsLat, gpsLon, geofence);
+
             if (inside && !inFence) {
                 inFence = true;
-                sock.write(alarmPacket(0x11)); // enter
+                sock.write(alarmPacket(0x11));
             }
+
             if (!inside && inFence) {
                 inFence = false;
-                sock.write(alarmPacket(0x12)); // exit
+                sock.write(alarmPacket(0x12));
             }
-        }, 3000);
 
-        // Heartbeat every 20 sec
+        }, 1000 * 5);
+
+        /* -------------------------
+           Heartbeat
+        ------------------------- */
         setInterval(() => {
             sock.write(heartbeatPacket());
-        }, 20000);
+        }, 60000);
     });
 
-    sock.on("data", (d) => console.log("ACK:", d.toString("hex")));
-    sock.on("close", () => console.log("Tracker closed:", imei));
+    sock.on("data", d =>
+        console.log("ACK:", d.toString("hex"))
+    );
+
+    sock.on("close", () =>
+        console.log("Tracker closed:", imei)
+    );
 }
