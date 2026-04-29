@@ -1,4 +1,5 @@
 import { startTracker } from "./simulator.js";
+import { startTrackerReplay } from "./simulator/replay.js";
 
 
 const imei = "356860820045174";
@@ -11,9 +12,14 @@ const imei = "356860820045174";
 //     host : "192.168.0.159",
 // });
 
-//Ranchi
-startTracker({
-    imei: imei,
-    lat: 23.3441,  
-    lon: 85.3096,  
+// //Ranchi
+// startTracker({
+//     imei: imei,
+//     lat: 23.3441,
+//     lon: 85.3096,
+//     host: '192.168.0.111'
+// });
+
+startTrackerReplay({
+    imei: "868957040909378",
 });

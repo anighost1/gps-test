@@ -101,11 +101,11 @@ function packet(protocol, infoContent) {
 
 // ====================== PACKET TYPES ======================
 
-function loginPacket(imei) {
+export function loginPacket(imei) {
     return packet(0x01, bcdImei(imei));
 }
 
-function gpsPacket(lat, lon, speed = 10, heading = 0) {
+export function gpsPacket(lat, lon, speed = 10, heading = 0) {
     const d = new Date();
 
     const time = Buffer.from([
@@ -148,21 +148,21 @@ function gpsPacket(lat, lon, speed = 10, heading = 0) {
     );
 }
 
-function heartbeatPacket() {
+export function heartbeatPacket() {
     return packet(0x13, Buffer.from([0x01]));
 }
 
-function statusPacket(battery) {
+export function statusPacket(battery) {
     return packet(0x10, Buffer.from([battery]));
 }
 
-function alarmPacket(code) {
+export function alarmPacket(code) {
     return packet(0x16, Buffer.from([code]));
 }
 
 // ====================== GEOFENCE HELPERS ======================
 
-function insideGeofence(lat, lon, fence) {
+export function insideGeofence(lat, lon, fence) {
     const dx = lat - fence.lat;
     const dy = lon - fence.lon;
     return dx * dx + dy * dy <= fence.radius * fence.radius;
